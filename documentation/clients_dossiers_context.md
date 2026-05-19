@@ -658,7 +658,7 @@ ARIANE_CORE_URL=http://192.168.2.110:4000
 5. **Filtres avancés** : Ajouter plus de filtres dans la liste des clients
 6. **Export** : Exporter les données clients/dossiers
 7. **Recherche globale** : Recherche unifiée clients + dossiers
-8. **Statistiques** : Dashboard avec statistiques par client/dossier
+8. **Statistiques** : Observabilité avec statistiques par client/dossier
 
 ---
 

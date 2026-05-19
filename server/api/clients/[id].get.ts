@@ -1,6 +1,31 @@
 // server/api/clients/[id].get.ts
 import { createError } from 'h3'
 
+function mapCrmClientToFrontend(crmClient: any) {
+  return {
+    id: crmClient.id,
+    name: crmClient.name ?? '',
+    companyName: crmClient.companyName ?? null,
+    industry: crmClient.industry ?? null,
+    email: crmClient.email ?? null,
+    phone: crmClient.phone ?? crmClient.telephone ?? null,
+    website: crmClient.website ?? null,
+    address: crmClient.address ?? null,
+    city: crmClient.city ?? null,
+    postalCode: crmClient.postalCode ?? null,
+    country: crmClient.country ?? null,
+    source: crmClient.source ?? null,
+    tags: Array.isArray(crmClient.tags) ? crmClient.tags : [],
+    notes: crmClient.notes ?? null,
+    lastContactAt: crmClient.lastContactAt ?? null,
+    nextFollowUpAt: crmClient.nextFollowUpAt ?? null,
+    status: crmClient.status ?? 'active',
+    archivedAt: crmClient.archivedAt ?? null,
+    createdAt: crmClient.createdAt,
+    updatedAt: crmClient.updatedAt,
+  }
+}
+
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')
 
@@ -29,23 +54,7 @@ export default defineEventHandler(async (event) => {
       })
     }
 
-    // Adapter la réponse CRM vers l'interface attendue
-    const crmClient = response.data
-    // Extraire nom et prénom du champ "name" (format: "Prénom Nom")
-    const nameParts = (crmClient.name || '').split(' ')
-    const prenom = nameParts[0] || ''
-    const nom = nameParts.slice(1).join(' ') || ''
-
-    return {
-      id: crmClient.id,
-      nom,
-      prenom,
-      email: '', // L'API CRM ne stocke pas l'email dans Client, il est dans Person
-      telephone: crmClient.telephone || null,
-      entreprise: crmClient.companyName || null,
-      createdAt: crmClient.createdAt,
-      updatedAt: crmClient.updatedAt,
-    }
+    return mapCrmClientToFrontend(response.data)
   } catch (err: any) {
     if (err.statusCode === 404) {
       throw err
@@ -56,4 +65,3 @@ export default defineEventHandler(async (event) => {
     })
   }
 })
-

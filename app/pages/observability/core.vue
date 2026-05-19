@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { useAsyncData } from '#app'
 import { useIntervalFn } from '@vueuse/core'
-import { computed } from 'vue'
 
 definePageMeta({
   ssr: false,
 })
 
 interface MetricsData {
+  error?: boolean
+  message?: string
   uptime_seconds?: number
   agents?: Record<string, {
     count?: number
@@ -46,6 +46,7 @@ interface LogsData {
   items?: LogItem[]
   error?: boolean
   message?: string
+  details?: string
 }
 
 const {
@@ -60,7 +61,7 @@ const {
   data: logs,
   refresh: refreshLogs,
   pending: pendingLogs,
-} = useAsyncData<LogsData>('ariane-logs', () => $fetch<LogsData>('/api/ariane/logs?limit=30'), {
+} = useAsyncData<LogsData>('ariane-logs', () => $fetch<LogsData>('/api/ariane/logs?limit=100'), {
   server: false,
 })
 
@@ -70,32 +71,100 @@ useIntervalFn(() => {
   refreshLogs()
 }, 10000)
 
+const metricsError = computed(() => (metrics.value as MetricsData)?.error === true)
+const logsError = computed(() => (logs.value as LogsData)?.error === true)
+const metricsErrorMessage = computed(() => (metrics.value as MetricsData)?.message ?? '')
+const logsErrorMessage = computed(() => (logs.value as LogsData)?.message ?? '')
+
 const uptime = computed(() => {
-  if (!metrics.value) return '—'
+  if (!metrics.value || metricsError.value) return '—'
   const s = (metrics.value as MetricsData).uptime_seconds ?? 0
   const h = Math.floor(s / 3600)
   const m = Math.floor((s % 3600) / 60)
-  const sec = s % 60
+  const sec = Math.floor(s % 60)
   const pad = (n: number) => String(n).padStart(2, '0')
   return `${pad(h)}:${pad(m)}:${pad(sec)}`
 })
 
-const services = computed(() => {
+// Services depuis les métriques (priorité)
+const servicesFromMetrics = computed(() => {
   const m = metrics.value as MetricsData
-  if (!m?.agents) return []
-
-  // Debug: afficher les données brutes dans la console
-  if (m.agents) {
-    console.log('📊 Métriques brutes reçues:', JSON.stringify(m.agents, null, 2))
-  }
-
+  if (!m?.agents || metricsError.value) return []
   return Object.entries(m.agents).map(([name, data]) => ({
     name,
     ...data,
   }))
 })
 
+// Fallback : dériver les stats des logs (endpoint, duration_ms, status dans meta/data)
+const servicesFromLogs = computed(() => {
+  const items = (logs.value as LogsData)?.items ?? []
+  if (logsError.value || !items.length) return []
+
+  const byEndpoint: Record<string, { durations: number[], errors: number }> = {}
+  for (const log of items) {
+    const src = log.meta ?? log.data ?? log.context ?? log
+    const endpoint = src.endpoint ?? src.path ?? log.agent ?? log.service
+    if (!endpoint) continue
+
+    const key = typeof endpoint === 'string' ? endpoint : String(endpoint)
+    if (!byEndpoint[key]) byEndpoint[key] = { durations: [], errors: 0 }
+
+    const duration = src.duration_ms ?? src.duration ?? 0
+    if (typeof duration === 'number' && duration >= 0) byEndpoint[key].durations.push(duration)
+
+    const status = src.status_code ?? src.status ?? 200
+    const statusNum = typeof status === 'string' ? parseInt(status, 10) : status
+    const isError = log.success === false || (typeof statusNum === 'number' && statusNum >= 400)
+    if (isError) byEndpoint[key].errors += 1
+  }
+
+  return Object.entries(byEndpoint).map(([name, { durations, errors }]) => {
+    const count = durations.length
+    const avg = count > 0
+      ? Math.round(durations.reduce((a, b) => a + b, 0) / count)
+      : 0
+    const sorted = [...durations].sort((a, b) => a - b)
+    const p95 = sorted.length > 0
+      ? sorted[Math.min(Math.floor(sorted.length * 0.95), sorted.length - 1)]
+      : 0
+    return {
+      name,
+      count,
+      request_count: count,
+      avg_duration_ms: avg,
+      avg_ms: avg,
+      avg: avg,
+      p95_duration_ms: p95,
+      p95_ms: p95,
+      p95: p95,
+      error_count: errors,
+      errorCount: errors,
+      errors,
+    }
+  })
+})
+
+const services = computed(() =>
+  servicesFromMetrics.value.length > 0 ? servicesFromMetrics.value : servicesFromLogs.value,
+)
+const servicesSource = computed(() =>
+  servicesFromMetrics.value.length > 0 ? 'metrics' : 'logs',
+)
+
+// Logs filtrés : warning et error uniquement (les infos sont dans le terminal)
+const WARN_ERROR_LEVELS = ['warning', 'warn', 'error', 'err']
+const filteredLogs = computed(() => {
+  const items = (logs.value as LogsData)?.items ?? []
+  return items.filter((log) => {
+    const level = (log.level ?? log.lvl ?? '').toString().toLowerCase()
+    const isError = log.success === false
+    return WARN_ERROR_LEVELS.includes(level) || isError
+  })
+})
+
 const globalStatus = computed(() => {
+  if (metricsError.value) return 'error'
   if (!services.value.length) return 'unknown'
   const hasErrors = services.value.some(
     (s) => (s.error_count ?? s.errorCount ?? s.errors ?? 0) > 0,
@@ -131,20 +200,24 @@ function formatTimestamp(ts?: string): string {
   }
 }
 
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v)
+}
+
 function getLogData(log: LogItem): string {
   // Priorité: message/errorMessage
   const message = log.message || log.errorMessage || ''
 
-  // Collecter toutes les données supplémentaires
+  // Collecter toutes les données supplémentaires (sécuriser contre les non-objets)
   const extraData: Record<string, any> = {}
 
-  if (log.meta && Object.keys(log.meta).length > 0) {
+  if (isPlainObject(log.meta) && Object.keys(log.meta).length > 0) {
     extraData.meta = log.meta
   }
-  if (log.context && Object.keys(log.context).length > 0) {
+  if (isPlainObject(log.context) && Object.keys(log.context).length > 0) {
     extraData.context = log.context
   }
-  if (log.data && Object.keys(log.data).length > 0) {
+  if (isPlainObject(log.data) && Object.keys(log.data).length > 0) {
     extraData.data = log.data
   }
 
@@ -185,10 +258,26 @@ function getLogData(log: LogItem): string {
         Ariane Core – Observabilité
       </h1>
       <p class="text-sm text-slate-500">
-        Vue temps réel de la santé d’Ariane Core (Dell) : uptime, temps de
+        Vue temps réel de la santé d'Ariane Core (Dell) : uptime, temps de
         réponse et logs récents.
       </p>
     </header>
+
+    <!-- Bannière d'erreur : Ariane Core inaccessible -->
+    <div
+      v-if="!pendingMetrics && metricsError"
+      class="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800"
+    >
+      <p class="font-medium">
+        Ariane Core inaccessible
+      </p>
+      <p class="mt-1 text-rose-700">
+        {{ metricsErrorMessage }}
+      </p>
+      <p class="mt-2 text-xs text-rose-600">
+        Vérifiez que le serveur Ariane Core est démarré et accessible.
+      </p>
+    </div>
 
     <!-- Global status -->
     <section
@@ -212,6 +301,13 @@ function getLogData(log: LogItem): string {
           >
             <span class="h-2 w-2 rounded-full bg-amber-500" />
             Dégradé
+          </span>
+          <span
+            v-else-if="globalStatus === 'error'"
+            class="inline-flex items-center gap-2 rounded-full bg-rose-100 px-3 py-1 text-xs text-rose-700 border border-rose-200"
+          >
+            <span class="h-2 w-2 rounded-full bg-rose-500" />
+            Erreur
           </span>
           <span
             v-else
@@ -244,28 +340,24 @@ function getLogData(log: LogItem): string {
 
     <!-- Services cards -->
     <section class="space-y-3">
-      <div class="flex items-center justify-between gap-2">
+      <div class="flex items-center justify-between gap-2 flex-wrap">
         <h2 class="text-sm font-semibold text-slate-800">
-          SLA et performances par agent
+          {{ servicesSource === 'logs' ? 'Performances par endpoint (dérivées des logs)' : 'SLA et performances par agent' }}
         </h2>
-        <span class="text-xs text-slate-400">
-          Dernière mise à jour :
-          <span v-if="pendingMetrics">chargement...</span>
-          <span v-else>OK</span>
-        </span>
-      </div>
-
-      <!-- Debug: Afficher les données brutes -->
-      <details v-if="metrics?.agents" class="mb-4 rounded-lg border border-amber-200 bg-amber-50/50 p-3 text-xs">
-        <summary class="cursor-pointer font-semibold text-amber-800">🐛 Debug: Données brutes des métriques</summary>
-        <pre class="mt-2 overflow-auto rounded bg-slate-900 p-3 text-slate-100 font-mono text-[10px]">{{ JSON.stringify(metrics.agents, null, 2) }}</pre>
-        <div class="mt-2 space-y-1">
-          <p class="font-semibold text-amber-900">Données parsées par agent:</p>
-          <div v-for="svc in services" :key="svc.name" class="rounded bg-white p-2">
-            <p class="font-mono text-[10px]"><strong>{{ svc.name }}:</strong> {{ JSON.stringify(svc) }}</p>
-          </div>
+        <div class="flex items-center gap-2">
+          <span
+            v-if="servicesSource === 'logs' && services.length > 0"
+            class="rounded bg-sky-100 px-2 py-0.5 text-[10px] text-sky-700"
+          >
+            Données des {{ logs?.items?.length ?? 0 }} derniers logs
+          </span>
+          <span class="text-xs text-slate-400">
+            Dernière mise à jour :
+            <span v-if="pendingMetrics">chargement...</span>
+            <span v-else>OK</span>
+          </span>
         </div>
-      </details>
+      </div>
 
       <div class="grid gap-4 md:grid-cols-2">
         <article
@@ -333,15 +425,21 @@ function getLogData(log: LogItem): string {
           </div>
 
           <div
-            v-else-if="!logs || !logs.items || !logs.items.length"
+            v-else-if="logsError"
+            class="p-3 text-rose-300"
+          >
+            {{ logsErrorMessage }}
+          </div>
+          <div
+            v-else-if="!filteredLogs.length"
             class="p-3 text-slate-400"
           >
-            Aucun log pour le moment.
+            Aucun warning ni erreur récent.
           </div>
 
           <div
             v-else
-            v-for="(log, idx) in logs.items"
+            v-for="(log, idx) in filteredLogs"
             :key="idx"
             class="border-b border-slate-800/60 px-3 py-1.5 flex gap-2"
           >

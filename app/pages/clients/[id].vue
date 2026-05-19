@@ -4,29 +4,42 @@ import { useEventBus } from '@vueuse/core'
 import { h, resolveComponent } from 'vue'
 import { useClients, type Client } from '~/composables/useClients'
 import { useDossiers, type Dossier } from '~/composables/useDossiers'
+import ClientInsightsPanel from '~/components/insights/ClientInsightsPanel.vue'
 
 definePageMeta({
   ssr: false,
 })
 
+const SOURCE_LABELS: Record<string, string> = {
+  referral: 'Bouche-à-oreille',
+  linkedin: 'LinkedIn',
+  cold_outreach: 'Prospection froide',
+  existing_client: 'Client existant',
+  job_board: 'Job board',
+  community: 'Communauté',
+  other: 'Autre',
+}
+
 const route = useRoute()
 const router = useRouter()
 const clientId = computed(() => route.params.id as string)
 
-
-const { fetchClient, updateClient } = useClients()
+const { fetchClient, updateClient, archiveClient, reactivateClient, deleteClient } = useClients()
 const { fetchDossiers, createDossier } = useDossiers()
-const toast = useToast()
 
 const client = ref<Client | null>(null)
 const dossiers = ref<Dossier[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
-const activeTab = ref('details')
+const activeTab = ref((route.query.tab as string) || 'details')
 const showEditModal = ref(false)
 const showDossierModal = ref(false)
+const showDeleteModal = ref(false)
 const updating = ref(false)
 const creatingDossier = ref(false)
+const archiving = ref(false)
+const reactivating = ref(false)
+const deleting = ref(false)
 
 const UBadge = resolveComponent('UBadge')
 
@@ -36,6 +49,13 @@ const statutColors: Record<string, any> = {
   resolu: { color: 'success', label: 'Résolu' },
   ferme: { color: 'neutral', label: 'Fermé' },
 }
+
+const isNextFollowUpOverdue = computed(() => {
+  const d = client.value?.nextFollowUpAt
+  if (!d) return false
+  const date = new Date(d)
+  return date < new Date()
+})
 
 async function loadClient() {
   loading.value = true
@@ -85,10 +105,49 @@ async function handleUpdateClient(clientData: Partial<Client>) {
 
     showEditModal.value = false
     await loadClient()
-    // Rafraîchir la liste des clients dans le ContextSwitcher
     refreshClientsEvent.emit()
   } finally {
     updating.value = false
+  }
+}
+
+async function handleArchive() {
+  archiving.value = true
+  try {
+    const { error: err } = await archiveClient(clientId.value)
+    if (!err) {
+      await loadClient()
+      refreshClientsEvent.emit()
+    }
+  } finally {
+    archiving.value = false
+  }
+}
+
+async function handleReactivate() {
+  reactivating.value = true
+  try {
+    const { error: err } = await reactivateClient(clientId.value)
+    if (!err) {
+      await loadClient()
+      refreshClientsEvent.emit()
+    }
+  } finally {
+    reactivating.value = false
+  }
+}
+
+async function handleDelete() {
+  deleting.value = true
+  try {
+    const { error: err } = await deleteClient(clientId.value)
+    if (!err) {
+      showDeleteModal.value = false
+      await router.push('/clients')
+      refreshClientsEvent.emit()
+    }
+  } finally {
+    deleting.value = false
   }
 }
 
@@ -107,6 +166,11 @@ async function handleCreateDossier(dossierData: Partial<Dossier>) {
   } finally {
     creatingDossier.value = false
   }
+}
+
+function formatDate(dateStr: string | null): string {
+  if (!dateStr) return '—'
+  return new Date(dateStr).toLocaleDateString('fr-FR')
 }
 
 const dossierColumns: TableColumn<Dossier>[] = [
@@ -146,7 +210,7 @@ const dossierColumns: TableColumn<Dossier>[] = [
   },
 ]
 
-const tabs = [
+const tabs = computed(() => [
   {
     label: 'Détails',
     value: 'details',
@@ -158,11 +222,25 @@ const tabs = [
     icon: 'i-lucide-folder',
     badge: dossiers.value.length > 0 ? String(dossiers.value.length) : undefined,
   },
-]
+  {
+    label: 'Insights',
+    value: 'insights',
+    icon: 'i-lucide-bar-chart-3',
+  },
+])
 
 watch(activeTab, (newTab) => {
   if (newTab === 'dossiers') {
     loadDossiers()
+  }
+  router.replace({
+    query: { ...route.query, tab: newTab },
+  })
+})
+
+watch(() => route.query.tab, (tab) => {
+  if (tab && ['details', 'dossiers', 'insights'].includes(tab)) {
+    activeTab.value = tab
   }
 })
 
@@ -185,7 +263,7 @@ onMounted(() => {
   <div class="min-h-screen bg-default">
     <div class="max-w-7xl mx-auto px-4 py-8 space-y-6">
       <!-- Header -->
-      <div class="flex items-center gap-4">
+      <div class="flex flex-wrap items-center gap-4">
         <UButton
           icon="i-lucide-arrow-left"
           variant="ghost"
@@ -194,23 +272,73 @@ onMounted(() => {
         >
           Retour
         </UButton>
-        <div class="flex-1">
-          <h1 class="text-3xl font-semibold tracking-tight">
-            {{ loading ? 'Chargement...' : client ? `${client.prenom} ${client.nom}` : 'Client' }}
-          </h1>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2 flex-wrap">
+            <h1 class="text-3xl font-semibold tracking-tight">
+              {{ loading ? 'Chargement...' : client ? client.name : 'Client' }}
+            </h1>
+            <UBadge
+              v-if="client?.status === 'archived'"
+              color="neutral"
+              variant="subtle"
+            >
+              Archivé
+            </UBadge>
+          </div>
           <p class="text-sm text-muted mt-1">
             Détails et dossiers du client
           </p>
         </div>
-        <UButton
-          v-if="client"
-          icon="i-lucide-edit"
-          variant="outline"
-          @click="showEditModal = true"
-        >
-          Modifier
-        </UButton>
+        <div class="flex items-center gap-2">
+          <UButton
+            v-if="client"
+            icon="i-lucide-edit"
+            variant="outline"
+            @click="showEditModal = true"
+          >
+            Modifier
+          </UButton>
+          <UButton
+            v-if="client?.status === 'active'"
+            icon="i-lucide-archive"
+            variant="outline"
+            color="neutral"
+            :loading="archiving"
+            @click="handleArchive"
+          >
+            Archiver
+          </UButton>
+          <UButton
+            v-if="client?.status === 'archived'"
+            icon="i-lucide-rotate-ccw"
+            variant="outline"
+            color="success"
+            :loading="reactivating"
+            @click="handleReactivate"
+          >
+            Réactiver
+          </UButton>
+          <UButton
+            v-if="client"
+            icon="i-lucide-trash-2"
+            variant="outline"
+            color="error"
+            @click="showDeleteModal = true"
+          >
+            Supprimer
+          </UButton>
+        </div>
       </div>
+
+      <!-- Alerte nextFollowUp dépassé -->
+      <UAlert
+        v-if="client && isNextFollowUpOverdue"
+        color="warning"
+        variant="soft"
+        title="Prochain suivi dépassé"
+        :description="`Le prochain suivi prévu le ${formatDate(client.nextFollowUpAt)} est dépassé.`"
+        icon="i-lucide-calendar-clock"
+      />
 
       <!-- Error state -->
       <UAlert
@@ -233,18 +361,38 @@ onMounted(() => {
 
         <!-- Details Tab -->
         <div v-if="activeTab === 'details'" class="space-y-4">
-          <UCard>
+          <UCard title="Identité">
             <div class="grid gap-4 md:grid-cols-2">
               <div>
                 <p class="text-xs font-semibold text-muted uppercase mb-1">
-                  Nom complet
+                  Nom
                 </p>
                 <p class="text-sm font-medium">
-                  {{ client.prenom }} {{ client.nom }}
+                  {{ client.name }}
                 </p>
               </div>
+              <div v-if="client.companyName">
+                <p class="text-xs font-semibold text-muted uppercase mb-1">
+                  Entreprise
+                </p>
+                <p class="text-sm">
+                  {{ client.companyName }}
+                </p>
+              </div>
+              <div v-if="client.industry">
+                <p class="text-xs font-semibold text-muted uppercase mb-1">
+                  Secteur
+                </p>
+                <p class="text-sm">
+                  {{ client.industry }}
+                </p>
+              </div>
+            </div>
+          </UCard>
 
-              <div>
+          <UCard title="Contact">
+            <div class="grid gap-4 md:grid-cols-2">
+              <div v-if="client.email">
                 <p class="text-xs font-semibold text-muted uppercase mb-1">
                   Email
                 </p>
@@ -257,53 +405,158 @@ onMounted(() => {
                   </a>
                 </p>
               </div>
-
-              <div v-if="client.telephone">
+              <div v-if="client.phone">
                 <p class="text-xs font-semibold text-muted uppercase mb-1">
                   Téléphone
                 </p>
                 <p class="text-sm">
                   <a
-                    :href="`tel:${client.telephone}`"
+                    :href="`tel:${client.phone}`"
                     class="text-primary hover:underline"
                   >
-                    {{ client.telephone }}
+                    {{ client.phone }}
                   </a>
                 </p>
               </div>
-
-              <div v-if="client.entreprise">
+              <div v-if="client.website">
                 <p class="text-xs font-semibold text-muted uppercase mb-1">
-                  Entreprise
+                  Site web
                 </p>
-                <p class="text-sm">{{ client.entreprise }}</p>
+                <p class="text-sm">
+                  <a
+                    :href="client.website"
+                    target="_blank"
+                    rel="noopener"
+                    class="text-primary hover:underline"
+                  >
+                    {{ client.website }}
+                  </a>
+                </p>
               </div>
+            </div>
+          </UCard>
 
+          <UCard v-if="client.address || client.city || client.postalCode || client.country" title="Adresse">
+            <div class="grid gap-4 md:grid-cols-2">
+              <div v-if="client.address" class="md:col-span-2">
+                <p class="text-xs font-semibold text-muted uppercase mb-1">
+                  Adresse
+                </p>
+                <p class="text-sm">
+                  {{ client.address }}
+                </p>
+              </div>
+              <div v-if="client.city">
+                <p class="text-xs font-semibold text-muted uppercase mb-1">
+                  Ville
+                </p>
+                <p class="text-sm">
+                  {{ client.city }}
+                </p>
+              </div>
+              <div v-if="client.postalCode">
+                <p class="text-xs font-semibold text-muted uppercase mb-1">
+                  Code postal
+                </p>
+                <p class="text-sm">
+                  {{ client.postalCode }}
+                </p>
+              </div>
+              <div v-if="client.country">
+                <p class="text-xs font-semibold text-muted uppercase mb-1">
+                  Pays
+                </p>
+                <p class="text-sm">
+                  {{ client.country }}
+                </p>
+              </div>
+            </div>
+          </UCard>
+
+          <UCard title="Suivi CRM">
+            <div class="grid gap-4 md:grid-cols-2">
+              <div v-if="client.source">
+                <p class="text-xs font-semibold text-muted uppercase mb-1">
+                  Source
+                </p>
+                <p class="text-sm">
+                  {{ SOURCE_LABELS[client.source] || client.source }}
+                </p>
+              </div>
+              <div>
+                <p class="text-xs font-semibold text-muted uppercase mb-1">
+                  Dernier contact
+                </p>
+                <p class="text-sm">
+                  {{ formatDate(client.lastContactAt) }}
+                </p>
+              </div>
+              <div>
+                <p class="text-xs font-semibold text-muted uppercase mb-1">
+                  Prochain suivi
+                </p>
+                <p class="text-sm" :class="{ 'text-warning font-medium': isNextFollowUpOverdue }">
+                  {{ formatDate(client.nextFollowUpAt) }}
+                </p>
+              </div>
+              <div v-if="client.tags?.length" class="md:col-span-2">
+                <p class="text-xs font-semibold text-muted uppercase mb-1">
+                  Tags
+                </p>
+                <div class="flex flex-wrap gap-1">
+                  <UBadge
+                    v-for="tag in client.tags"
+                    :key="tag"
+                    color="neutral"
+                    variant="subtle"
+                    size="sm"
+                  >
+                    {{ tag }}
+                  </UBadge>
+                </div>
+              </div>
+              <div v-if="client.notes" class="md:col-span-2">
+                <p class="text-xs font-semibold text-muted uppercase mb-1">
+                  Notes internes
+                </p>
+                <p class="text-sm whitespace-pre-wrap">
+                  {{ client.notes }}
+                </p>
+              </div>
               <div>
                 <p class="text-xs font-semibold text-muted uppercase mb-1">
                   Créé le
                 </p>
                 <p class="text-sm">
-                  {{ new Date(client.createdAt).toLocaleDateString('fr-FR') }}
+                  {{ formatDate(client.createdAt) }}
                 </p>
               </div>
-
               <div>
                 <p class="text-xs font-semibold text-muted uppercase mb-1">
                   Modifié le
                 </p>
                 <p class="text-sm">
-                  {{ new Date(client.updatedAt).toLocaleDateString('fr-FR') }}
+                  {{ formatDate(client.updatedAt) }}
                 </p>
               </div>
             </div>
           </UCard>
         </div>
 
+        <!-- Insights Tab -->
+        <div v-if="activeTab === 'insights'" class="space-y-4">
+          <ClientInsightsPanel
+            :key="client?.id ?? 'loading'"
+            :client-id="client?.id ?? clientId"
+          />
+        </div>
+
         <!-- Dossiers Tab -->
         <div v-if="activeTab === 'dossiers'" class="space-y-4">
           <div class="flex items-center justify-between">
-            <h2 class="text-lg font-semibold">Dossiers</h2>
+            <h2 class="text-lg font-semibold">
+              Dossiers
+            </h2>
             <UButton
               icon="i-lucide-plus"
               @click="showDossierModal = true"
@@ -352,6 +605,35 @@ onMounted(() => {
         </template>
       </UModal>
 
+      <!-- Delete confirmation Modal -->
+      <UModal
+        v-model:open="showDeleteModal"
+        title="Supprimer ce client ?"
+      >
+        <template #body>
+          <p class="text-default mb-4">
+            Supprimer définitivement ce client ? Cette action est irréversible. Il ne doit pas avoir de dossiers, personnes ou artifacts liés.
+          </p>
+          <div class="flex gap-2 justify-end">
+            <UButton
+              variant="outline"
+              color="neutral"
+              :disabled="deleting"
+              @click="showDeleteModal = false"
+            >
+              Annuler
+            </UButton>
+            <UButton
+              color="error"
+              :loading="deleting"
+              @click="handleDelete"
+            >
+              Supprimer définitivement
+            </UButton>
+          </div>
+        </template>
+      </UModal>
+
       <!-- Create Dossier Modal -->
       <UModal
         v-model:open="showDossierModal"
@@ -369,4 +651,3 @@ onMounted(() => {
     </div>
   </div>
 </template>
-

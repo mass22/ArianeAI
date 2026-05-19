@@ -8,7 +8,11 @@
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
-    "postinstall": "nuxt prepare"
+    "postinstall": "nuxt prepare",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "seed:crm": "node scripts/seed-crm.mjs",
+    "seed:meeting-marie": "node scripts/seed-meeting-marie.mjs"
   },
   "dependencies": {
     "@ai-sdk/vue": "^2.0.111",
@@ -30,7 +34,10 @@
   },
   "devDependencies": {
     "@nuxt/devtools": "latest",
+    "@nuxt/test-utils": "^4.0.0",
     "@types/node": "^20.0.0",
-    "shadcn-nuxt": "^2.4.3"
+    "@vue/test-utils": "^2.4.6",
+    "shadcn-nuxt": "^2.4.3",
+    "vitest": "^4.0.18"
   }
 }

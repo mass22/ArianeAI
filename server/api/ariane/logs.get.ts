@@ -19,7 +19,6 @@ export default defineEventHandler(async (event) => {
       query: { limit },
     })
 
-    // Réinitialiser le cache d'erreur en cas de succès
     lastErrorLogTime = 0
 
     return {

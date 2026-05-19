@@ -1,6 +1,31 @@
 // server/api/clients/[id].put.ts
 import { createError } from 'h3'
 
+function mapCrmClientToFrontend(crmClient: any) {
+  return {
+    id: crmClient.id,
+    name: crmClient.name ?? '',
+    companyName: crmClient.companyName ?? null,
+    industry: crmClient.industry ?? null,
+    email: crmClient.email ?? null,
+    phone: crmClient.phone ?? crmClient.telephone ?? null,
+    website: crmClient.website ?? null,
+    address: crmClient.address ?? null,
+    city: crmClient.city ?? null,
+    postalCode: crmClient.postalCode ?? null,
+    country: crmClient.country ?? null,
+    source: crmClient.source ?? null,
+    tags: Array.isArray(crmClient.tags) ? crmClient.tags : [],
+    notes: crmClient.notes ?? null,
+    lastContactAt: crmClient.lastContactAt ?? null,
+    nextFollowUpAt: crmClient.nextFollowUpAt ?? null,
+    status: crmClient.status ?? 'active',
+    archivedAt: crmClient.archivedAt ?? null,
+    createdAt: crmClient.createdAt,
+    updatedAt: crmClient.updatedAt,
+  }
+}
+
 export default defineEventHandler(async (event) => {
   const id = getRouterParam(event, 'id')
   const body = await readBody(event)
@@ -12,12 +37,11 @@ export default defineEventHandler(async (event) => {
     })
   }
 
-  // Validation basique
-  if (!body.nom || !body.prenom) {
+  if (!body.name?.trim()) {
     throw createError({
       statusCode: 400,
       statusMessage: 'Bad Request',
-      message: 'Les champs nom et prénom sont requis',
+      message: 'Le champ nom est requis',
     })
   }
 
@@ -27,23 +51,23 @@ export default defineEventHandler(async (event) => {
     config.arianeCoreUrl ||
     'http://127.0.0.1:4000'
 
-  // Adapter les données pour l'API CRM
-  // Note: L'API CRM ne stocke pas l'email dans Client, il faudrait mettre à jour une Person séparément
-  const crmPayload: Record<string, any> = {}
-  if (body.nom || body.prenom) {
-    crmPayload.name = `${body.prenom} ${body.nom}`.trim()
+  const crmPayload: Record<string, any> = {
+    name: body.name.trim(),
   }
-  if (body.entreprise !== undefined) {
-    crmPayload.companyName = body.entreprise || undefined
-  }
-  if (body.telephone !== undefined) {
-    crmPayload.telephone = body.telephone || undefined
-  }
-
-  console.log(`[PUT /api/clients/${id}] Envoi à Ariane Core:`, {
-    url: `${baseUrl}/crm/clients/${id}`,
-    payload: crmPayload,
-  })
+  if (body.companyName !== undefined) crmPayload.companyName = body.companyName ? body.companyName.trim() : null
+  if (body.industry !== undefined) crmPayload.industry = body.industry ? body.industry.trim() : null
+  if (body.email !== undefined) crmPayload.email = body.email ? body.email.trim() : null
+  if (body.phone !== undefined) crmPayload.phone = body.phone ? body.phone.trim() : null
+  if (body.website !== undefined) crmPayload.website = body.website ? body.website.trim() : null
+  if (body.address !== undefined) crmPayload.address = body.address ? body.address.trim() : null
+  if (body.city !== undefined) crmPayload.city = body.city ? body.city.trim() : null
+  if (body.postalCode !== undefined) crmPayload.postalCode = body.postalCode ? body.postalCode.trim() : null
+  if (body.country !== undefined) crmPayload.country = body.country ? body.country.trim() : null
+  if (body.source !== undefined) crmPayload.source = body.source
+  if (Array.isArray(body.tags)) crmPayload.tags = body.tags
+  if (body.notes !== undefined) crmPayload.notes = body.notes ? body.notes.trim() : null
+  if (body.lastContactAt !== undefined) crmPayload.lastContactAt = body.lastContactAt
+  if (body.nextFollowUpAt !== undefined) crmPayload.nextFollowUpAt = body.nextFollowUpAt
 
   try {
     const response = await $fetch<{ ok: boolean; data: any }>(
@@ -54,43 +78,18 @@ export default defineEventHandler(async (event) => {
       },
     )
 
-    console.log(`[PUT /api/clients/${id}] Réponse d'Ariane Core:`, response)
-
     if (!response.ok) {
-      console.error(`[PUT /api/clients/${id}] Erreur: response.ok = false`)
       throw createError({
         statusCode: 500,
         message: 'Erreur lors de la mise à jour du client',
       })
     }
 
-    // Adapter la réponse pour correspondre à l'interface attendue
-    const crmClient = response.data
-    const nameParts = (crmClient.name || '').split(' ')
-    const prenom = nameParts[0] || ''
-    const nom = nameParts.slice(1).join(' ') || ''
-
-    return {
-      id: crmClient.id,
-      nom,
-      prenom,
-      email: body.email || '', // L'API CRM ne stocke pas l'email dans Client, on garde celui fourni
-      telephone: crmClient.telephone || body.telephone || null,
-      entreprise: crmClient.companyName || body.entreprise || null,
-      createdAt: crmClient.createdAt,
-      updatedAt: crmClient.updatedAt,
-    }
+    return mapCrmClientToFrontend(response.data)
   } catch (err: any) {
-    console.error(`[PUT /api/clients/${id}] Erreur lors de la mise à jour:`, {
-      statusCode: err.statusCode,
-      message: err.message,
-      data: err.data,
-      stack: err.stack,
-    })
     throw createError({
       statusCode: err.statusCode || 500,
       message: err.message || 'Erreur lors de la mise à jour du client',
     })
   }
 })
-

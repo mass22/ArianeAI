@@ -1,0 +1,82 @@
+---
+description: Règles et contexte pour le backend Ariane Core - conserver ce fichier dans le projet Ariane-Core
+globs: 
+alwaysApply: false
+---
+
+# Ariane Core – Backend API
+
+## Rôle
+
+Ariane Core est le **backend** de l'écosystème Ariane. Il est consommé par **ArianeAI** (frontend Nuxt) qui fait proxy vers toutes les routes. Le frontend tourne sur `localhost:3000`, Ariane Core sur `localhost:4000` par défaut.
+
+## Principes
+
+- **Souveraineté** : Modèles locaux via Ollama, pas de dépendance cloud obligatoire
+- **API REST** : Format standard `{ ok: boolean, data?: T }` ou directement `T`
+- **Compatibilité** : Ne pas casser les contrats existants — ArianeAI en dépend
+
+## Endpoints attendus par ArianeAI
+
+### CRM (`/crm/`)
+
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| GET | `/crm/clients` | Liste clients (query: `status`, `limit`, `offset`) |
+| GET | `/crm/clients/:id` | Détail client |
+| POST | `/crm/clients` | Création client |
+| PATCH | `/crm/clients/:id` | Mise à jour client |
+| DELETE | `/crm/clients/:id?confirm=true` | Suppression (409 si dépendances) |
+| POST | `/crm/clients/:id/archive` | Archivage |
+| POST | `/crm/clients/:id/reactivate` | Réactivation |
+| GET | `/crm/dossiers?clientId=` | Dossiers par client |
+| POST | `/crm/dossiers` | Création dossier |
+
+**Client enrichi** : name, companyName, industry, email, phone, website, address, city, postalCode, country, source, tags, notes, lastContactAt, nextFollowUpAt, status (active|archived).
+
+### Meeting & Memory
+
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| POST | `/transcribe` | Transcription Whisper (body: audio_base64, format, language) |
+| POST | `/agent/scribe` | Agent Scribe (body: transcript, context) → résumé structuré |
+| POST | `/meetings/import` | Import réunion (body: content, transcript?, scribeResult?, meta) |
+| POST | `/workflows/meeting/import` | Workflow complet : audio → transcribe → scribe → import |
+| GET | `/memory/insights?clientId=` | Insights agrégés par client |
+| GET | `/memory/search?query=&clientId=` | Recherche mémoire RAG |
+
+**meetings/import meta** : doit accepter `clientId` et `dossierId` pour lier la réunion au client (alimente les insights).
+
+**meetings/import + CRM artifacts** : lors de la création de l'artifact CRM, stocker `scribeResult` dans `metadata.scribeResult` pour que le fallback insights d'ArianeAI puisse extraire `action_items`, `risks`, `key_points`, `client_goals`. Format attendu : `{ action_items: [], risks: [], key_points: [], client_goals: [] }`.
+
+**memory/insights** : doit retourner `aggregated`, `top_topics`, `recurring_risks`, `recurring_decisions`, `activity_trend`. Format direct ou `{ data: {...} }`.
+
+### Autres
+
+| Méthode | Route | Description |
+|---------|-------|-------------|
+| GET | `/api/leads` | Leads (query: type, status, limit, offset) |
+| PATCH | `/api/leads/:lead_key` | Mise à jour lead — doit accepter `contact_name`, `company`, `role`, `type`, `linkedin_url` pour la saisie manuelle |
+| GET | `/api/daily?date=` | Brief quotidien |
+| POST | `/llm/chat` | Chat LLM (streaming) |
+| GET | `/metrics` | Métriques (uptime, agents) |
+
+## Stockage CRM
+
+- **JSONL** : `data/crm/{clients,dossiers,persons,artifacts}.jsonl`
+- Pas de DB requise
+- Artifacts : type `meeting` | `pdf` | `email` | `note` | `other`
+
+## Conventions
+
+1. **Réponses** : `{ ok: true, data: T }` ou `T` directement
+2. **Erreurs** : HTTP 4xx/5xx, corps `{ ok: false, error: string }`
+3. **IDs** : chaînes uniques (cuid, uuid, etc.)
+4. **Dates** : ISO 8601
+5. **Validation** : renvoyer 400 avec message clair
+
+## Tests
+
+- Vérifier que les endpoints répondent comme attendu par ArianeAI
+- Script seed : `npm run seed:crm` (côté ArianeAI) appelle Ariane Core
+- Health : `GET /health` ou `/api/health` pour monitoring

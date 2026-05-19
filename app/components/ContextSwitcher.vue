@@ -9,11 +9,13 @@ const dossiers = ref<any[]>([])
 const loadingClients = ref(false)
 const loadingDossiers = ref(false)
 
-// Charger la liste des clients
+// Charger la liste des clients (actifs uniquement pour le switcher)
 async function loadClients() {
   loadingClients.value = true
   try {
-    const data = await $fetch<{ items: any[]; total: number }>('/api/clients')
+    const data = await $fetch<{ items: any[]; total: number }>('/api/clients', {
+      query: { status: 'active' },
+    })
     clients.value = data?.items || []
   } catch (err) {
     console.error('Erreur lors du chargement des clients:', err)
@@ -45,10 +47,12 @@ async function loadDossiers(clientId: string) {
 const clientOptions = computed(() => {
   return [
     { label: 'Sélectionner un client', value: null },
-    ...clients.value.map((c) => ({
-      label: `${c.prenom} ${c.nom}${c.entreprise ? ` (${c.entreprise})` : ''}`,
-      value: c.id,
-    })),
+    ...clients.value
+      .filter((c) => c.status !== 'archived')
+      .map((c) => ({
+        label: `${c.name}${c.companyName ? ` (${c.companyName})` : ''}`,
+        value: c.id,
+      })),
   ]
 })
 
@@ -84,16 +88,15 @@ async function handleClientChange(newClientId: string | null) {
 
 // Écouter les événements de rafraîchissement
 const refreshClientsEvent = useEventBus('refresh-clients')
-watch(refreshClientsEvent, () => {
+function onRefresh() {
   loadClients()
-  // Si le client actuel est sélectionné, recharger aussi les dossiers
   if (context.value.clientId) {
     loadDossiers(context.value.clientId)
   }
-})
+}
 
-// Charger les clients au montage
 onMounted(() => {
+  refreshClientsEvent.on(onRefresh)
   loadClients()
   if (context.value.clientId) {
     loadDossiers(context.value.clientId)
@@ -143,7 +146,7 @@ onMounted(() => {
       variant="subtle"
       class="text-xs"
     >
-      {{ context.client ? `${context.client.prenom} ${context.client.nom}` : 'Chargement...' }}
+      {{ context.client ? context.client.name : 'Chargement...' }}
       <span v-if="context.dossier"> · {{ context.dossier.titre }}</span>
     </UBadge>
   </div>

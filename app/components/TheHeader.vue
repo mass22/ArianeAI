@@ -1,3 +1,7 @@
+<script setup lang="ts">
+const { apiLatencyMs } = useApiStatus()
+</script>
+
 <template>
   <div class="max-w-6xl mx-auto px-4 py-8 space-y-8">
     <header class="space-y-3">
@@ -6,7 +10,18 @@
           Ariane AI
         </h1>
         <ClientOnly>
-          <ContextSwitcher />
+          <div class="flex items-center gap-3">
+            <div class="flex items-center gap-2">
+              <ApiStatusBadge />
+              <span
+                v-if="apiLatencyMs != null"
+                class="text-xs text-muted-foreground tabular-nums"
+              >
+                API: {{ apiLatencyMs }}ms
+              </span>
+            </div>
+            <ContextSwitcher />
+          </div>
           <template #fallback>
             <div class="min-w-[200px] h-10" />
           </template>
@@ -21,13 +36,16 @@
             <NuxtLink to="/clients">Clients</NuxtLink>
           </li>
           <li>
+            <NuxtLink to="/leads">Leads</NuxtLink>
+          </li>
+          <li>
+            <NuxtLink to="/daily">Brief du jour</NuxtLink>
+          </li>
+          <li>
             <NuxtLink to="/meeting">Meeting</NuxtLink>
           </li>
           <li>
-            <NuxtLink to="/dashboard/core">Dashboard</NuxtLink>
-          </li>
-          <li>
-            <NuxtLink to="/agents">Agents</NuxtLink>
+            <NuxtLink to="/observability/core">Observabilité</NuxtLink>
           </li>
           <li>
             <a href="http://massimo-ia:4001" target="_blank">Documentation</a>

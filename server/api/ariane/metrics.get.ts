@@ -4,6 +4,9 @@
 let lastErrorLogTime = 0
 const ERROR_LOG_INTERVAL = 60000 // Logger l'erreur max 1 fois par minute
 
+// Fallback uptime : timestamp de la première réponse réussie d'Ariane (durée de vie apparente)
+let arianeFirstSeenAt = 0
+
 export default defineEventHandler(async (event) => {
   const config = useRuntimeConfig()
   const baseUrl =
@@ -12,10 +15,50 @@ export default defineEventHandler(async (event) => {
     'http://127.0.0.1:4000'
 
   try {
-    const snapshot = await $fetch(`${baseUrl}/metrics`)
-    // Réinitialiser le cache d'erreur en cas de succès
+    const raw = await $fetch<any>(`${baseUrl}/metrics`)
     lastErrorLogTime = 0
-    return snapshot
+
+    let uptimeSeconds =
+      raw?.uptime_seconds ??
+      raw?.uptime ??
+      raw?.process?.uptime ??
+      raw?.data?.uptime ??
+      (typeof raw?.uptime_ms === 'number' ? Math.floor(raw.uptime_ms / 1000) : undefined)
+
+    // Fallback : si /metrics n'a pas d'uptime, essayer /health
+    if (uptimeSeconds == null || uptimeSeconds <= 0) {
+      try {
+        const health = await $fetch<any>(`${baseUrl}/health`)
+        uptimeSeconds =
+          health?.uptime_seconds ??
+          health?.uptime ??
+          health?.process?.uptime ??
+          (typeof health?.uptime_ms === 'number' ? Math.floor(health.uptime_ms / 1000) : undefined)
+      } catch {
+        // ignorer
+      }
+    }
+
+    // Dernier recours : uptime depuis la première réponse réussie (proxy Nuxt → Ariane)
+    if (uptimeSeconds == null || uptimeSeconds <= 0) {
+      if (arianeFirstSeenAt === 0) arianeFirstSeenAt = Date.now()
+      uptimeSeconds = Math.floor((Date.now() - arianeFirstSeenAt) / 1000)
+    }
+
+    const agentsRaw =
+      raw?.agents ??
+      raw?.endpoints ??
+      raw?.routes ??
+      raw?.services ??
+      {}
+    const agents =
+      typeof agentsRaw === 'object' && agentsRaw !== null ? agentsRaw : {}
+
+    return {
+      ...raw,
+      uptime_seconds: uptimeSeconds,
+      agents,
+    }
   } catch (err: any) {
     const now = Date.now()
     const isConnectionError = err?.cause?.code === 'ECONNREFUSED' || err?.message?.includes('ECONNREFUSED') || err?.cause?.code === 'ENOTFOUND'
